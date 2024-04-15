@@ -5,82 +5,96 @@ from torch.utils.data import DataLoader, random_split
 import os
 from src import AudioDataset
 
-# Define the device to run the model on
+# Training loop
+num_epochs = 10
+
+# Device configuration
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-# Cargar el procesador y el modelo pre-entrenado
+# Load processor and pretrained model
 processor = Wav2Vec2Processor.from_pretrained("facebook/wav2vec2-base")
 model = Wav2Vec2ForCTC.from_pretrained("facebook/wav2vec2-base")
 model.to(device)
 
-# Añadir una capa de clasificación en la parte superior de wav2vec 2.0
-# Supongamos que tienes 3 clases distintas: TEACHER, CHILD, OTHER
-num_labels = 3  # Número de hablantes a clasificar
-model.lm_head = nn.Linear(model.config.hidden_size, num_labels)  # Reemplazar la cabeza de LM por una de clasificación
+# Add a classification layer
+num_labels = 3  # Number of distinct labels
+model.lm_head = nn.Linear(model.config.hidden_size, num_labels)  # Replace LM head with a classification head
 model.lm_head.to(device)
 
-# Load the dataset
+# Load dataset
 label_dict = {"TEACHER": 0, "CHILD": 1, "OTHER": 2}
-full_dataset = AudioDataset(csv_path='./data/metadata.csv', label_dict=label_dict)
+full_dataset = AudioDataset(csv_path='./data/metadata copy.csv', label_dict=label_dict)
 
-# Split the dataset into train and test sets
-batch_size = 32  # Define the batch size
-train_size = int(len(full_dataset) * 0.8)  # 80% of the data for training
-test_size = len(full_dataset) - train_size  # Remaining 20% for testing
+# Split dataset into train and test sets
+batch_size = 32
+train_size = int(0.8 * len(full_dataset))
+test_size = len(full_dataset) - train_size
 train_dataset, test_dataset = random_split(full_dataset, [train_size, test_size])
 
-# Create DataLoaders for both train and test sets
+# Data loaders
 train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, collate_fn=full_dataset.collate_fn)
 test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False, collate_fn=full_dataset.collate_fn)
 
-# Definir una función de pérdida y un optimizador
+# Loss function and optimizer
 loss_fn = nn.CrossEntropyLoss()
 optimizer = torch.optim.AdamW(model.parameters(), lr=1e-5)
 
-def train(model, train_loader, processor, loss_fn, optimizer, device):
+def train_epoch(model, loader, processor, loss_fn, optimizer, device):
     model.train()
-    for batch in train_loader:
+    total_loss = 0
+    for batch in loader:
         speech, labels = batch
-        speech = speech.to(device)  # Ensure speech data is on the correct device
-        labels = labels.to(device)  # Ensure labels are on the correct device
+        inputs = processor(speech, return_tensors="pt", padding=True, sampling_rate=16000).input_values.to(device)
+        labels = labels.to(device)
 
-        print (f"Speech Shape: {speech.shape}") 
+        # Reshape if the batch size is 1 to remove singleton dimension
+        if inputs.dim() == 3 and inputs.size(0) == 1:
+            inputs = inputs.squeeze(0)
 
-        # Process the input batch through the processor
-        inputs = processor(speech, return_tensors="pt", padding=True, sampling_rate=16000)
-        input_values = inputs.input_values.to(device)  # Get the processed inputs ready for the model
+        outputs = model(inputs)
+        loss = loss_fn(outputs.logits, labels)
 
-        # Debug: Check input dimension
-        print(f"Input Values Shape: {input_values.shape}")  # Should be [batch_size, seq_length]
-
-        # Reshape to remove any extra singleton dimension
-        if input_values.dim() == 3 and input_values.size(0) == 1:
-            input_values = input_values.squeeze(0)
-
-        print(f"Processed Input Values Shape: {input_values.shape}")
-
-        # Forward pass
-        outputs = model(input_values)
-        logits = outputs.logits
-
-        print (f"Logits Shape: {logits.shape}")
-        print (f"Labels Shape: {labels.shape}")
-
-        # Compute loss
-        loss = loss_fn(logits, labels)
-
-        # Backpropagation
         optimizer.zero_grad()
         loss.backward()
         optimizer.step()
+        total_loss += loss.item()
 
-        print(f"Loss: {loss.item()}")
+    return total_loss / len(loader)
 
-# Entrenar el modelo
-train(model, train_loader, processor, loss_fn, optimizer, device)
+def evaluate(model, loader, processor, loss_fn, device):
+    model.eval()
+    total_loss = 0
+    with torch.no_grad():
+        for batch in loader:
+            speech, labels = batch
+            inputs = processor(speech, return_tensors="pt", padding=True, sampling_rate=16000).input_values.to(device)
+            labels = labels.to(device)
 
-# Guardar el modelo fine-tuneado
-save_directory = "./"
-os.makedirs(save_directory, exist_ok=True)
-model.save_pretrained(save_directory)
-processor.save_pretrained(save_directory)
+            # Reshape if the batch size is 1 to remove singleton dimension
+            if inputs.dim() == 3 and inputs.size(0) == 1:
+                inputs = inputs.squeeze(0)
+
+            outputs = model(inputs)
+            loss = loss_fn(outputs.logits, labels)
+            total_loss += loss.item()
+
+    return total_loss / len(loader)
+
+
+
+def train_and_evaluate(model, train_loader, test_loader, processor, loss_fn, optimizer, device, num_epochs=10, save_path="./"):
+    best_loss = float('inf')  # Initialize with a very high value
+    for epoch in range(num_epochs):
+        train_loss = train_epoch(model, train_loader, processor, loss_fn, optimizer, device)
+        test_loss = evaluate(model, test_loader, processor, loss_fn, device)
+        print(f"Epoch {epoch+1}, Train Loss: {train_loss:.4f}, Test Loss: {test_loss:.4f}")
+
+        # Check if the current model is the best one
+        if test_loss < best_loss:
+            best_loss = test_loss
+            print(f"New best model found at epoch {epoch+1} with test loss {test_loss:.4f}. Saving model...")
+            torch.save(model.state_dict(), os.path.join(save_path, 'best_model.pth'))
+            processor.save_pretrained(save_path)
+
+# Call the function with appropriate arguments
+train_and_evaluate(model, train_loader, test_loader, processor, loss_fn, optimizer, device)
