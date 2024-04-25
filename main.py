@@ -6,7 +6,7 @@ import os
 from src import AudioDataset
 
 # Training loop
-num_epochs = 10
+num_epochs = 30
 
 # Device configuration
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -23,7 +23,7 @@ model.lm_head.to(device)
 
 # Load dataset
 label_dict = {"TEACHER": 0, "CHILD": 1, "OTHER": 2}
-full_dataset = AudioDataset(csv_path='./data/metadata copy.csv', label_dict=label_dict)
+full_dataset = AudioDataset(csv_path='./data/metadata.csv', label_dict=label_dict)
 
 # Split dataset into train and test sets
 batch_size = 32
@@ -82,7 +82,7 @@ def evaluate(model, loader, processor, loss_fn, device):
 
 
 
-def train_and_evaluate(model, train_loader, test_loader, processor, loss_fn, optimizer, device, num_epochs=10, save_path="./"):
+def train_and_evaluate(model, train_loader, test_loader, processor, loss_fn, optimizer, device, num_epochs=10, save_path="./epoch"):
     best_loss = float('inf')  # Initialize with a very high value
     for epoch in range(num_epochs):
         train_loss = train_epoch(model, train_loader, processor, loss_fn, optimizer, device)
@@ -93,8 +93,8 @@ def train_and_evaluate(model, train_loader, test_loader, processor, loss_fn, opt
         if test_loss < best_loss:
             best_loss = test_loss
             print(f"New best model found at epoch {epoch+1} with test loss {test_loss:.4f}. Saving model...")
-            torch.save(model.state_dict(), os.path.join(save_path, 'best_model.pth'))
+            model.save_pretrained(save_path)
             processor.save_pretrained(save_path)
 
-# Call the function with appropriate arguments
-train_and_evaluate(model, train_loader, test_loader, processor, loss_fn, optimizer, device)
+print ("Training model...")
+train_and_evaluate(model, train_loader, test_loader, processor, loss_fn, optimizer, device, num_epochs=num_epochs)
